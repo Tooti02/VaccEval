@@ -1,0 +1,443 @@
+ 
+Vaccination and childbirth analysis 2025
+
+Script used for statistical analyses (R software package version 4.3.0). For more information Contact Dennis Nordvall (dennis.nordvall@rjl.se)
+
+###Translation of variable names for both Part I and II###
+
+Slutdatum: Date of study end
+Födelsedatum: Date of birth
+ÅlderStartdatum: Age at study start 2021-01-01
+Befruktningsdatum: Calculated date of conception
+Kontaktdatum: Date of Contact
+Exposuredatum: Date of exposure
+Avliden.datum: Date of Death
+Censurdatum: Date of censoring
+
+
+
+####Part I: Childbirths####
+
+
+Slutdatum <- as.Date("2023-09-30")
+
+#Study cohort
+data <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/Kausal_inferens/data.csv",header=T,sep=",",encoding="latin1")
+data$Födelsedatum <- as.Date(data$Födelsedatum)
+
+#All deaths
+döda <- read.csv("H:/Dokument/Futurum/DataUttag/Stomby/Analyser/Döda_jkp.csv",header=T,sep=";",encoding="latin1")
+
+#Adult women of pre menopause age at study start
+data <- data[data$ÅlderStartdatum>=18 & data$ÅlderStartdatum<46,]
+data <- data[data$Kön=="Kvinna",]
+
+#Outcome Childbirth
+FörstaFörlossningOkt21_ <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/PREDICT/FörlossningsArtikel/FörstaFörlossningJan21_.csv",header=T,sep=";",encoding="latin1")
+FörstaFörlossningOkt21_$Kontaktdatum <- as.Date(FörstaFörlossningOkt21_$Kontaktdatum)
+FörstaFörlossningOkt21_$Befruktningsdatum <- as.Date(FörstaFörlossningOkt21_$Kontaktdatum - 280) #pregnancy length=280 days
+FörstaFörlossningOkt21_$Befruktningsdatum <- as.Date(FörstaFörlossningOkt21_$Kontaktdatum - 266) #pregnancy length=266 days
+FörstaFörlossningOkt21_ <- FörstaFörlossningOkt21_[,-c(3)]
+names(FörstaFörlossningOkt21_)[names(FörstaFörlossningOkt21_)=="Befruktningsdatum"] <- "Kontaktdatum"
+
+#Pregnant at study start
+grav <- FörstaFörlossningOkt21_[FörstaFörlossningOkt21_$Kontaktdatum<"2021-01-01",]
+grav <- grav[!duplicated(grav$Personnr),]
+data <- data[!(data$Personnr %in% grav$Personnr),]
+ 
+#COVID-19 vaccination dose 2
+FörstaVaccinationDos2 <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/PREDICT/FörstaVaccinationDos2.csv",header=T,sep=";",encoding="latin1")
+FörstaVaccinationDos2$Kontaktdatum <- as.Date(FörstaVaccinationDos2$Kontaktdatum)
+names(FörstaVaccinationDos2)[names(FörstaVaccinationDos2)=="Kontaktdatum"] <- "Exposuredatum"
+ 
+#Who are exposed/vaccinated?
+data1 <- merge(data,FörstaVaccinationDos2,by="Personnr",all.x=T)
+data1 <- within(data1, exposure <- ifelse(!is.na(data1$Exposuredatum),1,0))
+dat <- within(data1, Exposuredatum <- as.Date("2021-01-01"))
+dat <- within(dat, exposure <- 0)
+data <- rbind(dat,data1[!is.na(data1$Exposuredatum),])
+
+#Remove exposed before "2021-01-01"
+data <- data[data$Exposuredatum>=as.Date("2021-01-01"),]
+test <- merge(data, döda,by="Personnr",all.x=T)
+test$Avliden.datum <- as.Date(test$Avliden.datum)
+test <- merge(test, FörstaFörlossningOkt21_[,-c(2)],by="Personnr",all.x=T)
+test$Exposuredatum <- as.Date(test$Exposuredatum)
+test$Födelsedatum <- as.Date(test$Födelsedatum)
+test <- test[order(test$Personnr,as.numeric(test$Exposuredatum)),]
+test$ID <- seq.int(nrow(test))
+
+#Calculate age at exposure
+test <- within(test, startAge <- as.integer(Exposuredatum-Födelsedatum))
+test <- within(test, endDate <- as.Date(ifelse(Avliden.datum<Slutdatum & !is.na(Avliden.datum),Avliden.datum,Slutdatum)))
+test <- within(test, status <- ifelse(Kontaktdatum<=endDate & !is.na(Kontaktdatum),1,0))
+test <- within(test, endAge <- ifelse(status==1,as.integer(Kontaktdatum-Födelsedatum),as.integer(endDate-Födelsedatum)))
+
+#Remove outcomes before exposure
+test <- within(test, Före <- ifelse(Kontaktdatum<Exposuredatum & !is.na(Kontaktdatum) & !is.na(Exposuredatum),1,0))
+test <- test[test$Före==0,]
+test <- test[,-c(15)]
+test <- test[!is.na(test$PatientID),]
+test <- test[order(test$Personnr,as.numeric(test$Exposuredatum)),]
+
+#Censor for vaccination dose 3
+FörstaVaccinationDos3 <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/PREDICT/FörstaVaccinationDos3.csv",header=T,sep=";",encoding="latin1")
+FörstaVaccinationDos3$Kontaktdatum <- as.Date(FörstaVaccinationDos3$Kontaktdatum)
+names(FörstaVaccinationDos3)[names(FörstaVaccinationDos3)=="Kontaktdatum"] <- "Censurdatum"
+test <- merge(test,FörstaVaccinationDos3,by="Personnr",all.x=T)
+
+#Remove any faulty dose 3 dates that are registered prior to dose 2
+test <- within(test, Före <- ifelse(Censurdatum<=Exposuredatum & !is.na(Censurdatum),1,0))
+test <- test[test$Före==0,]
+test <- within(test, endDate <- as.Date(ifelse(Censurdatum<endDate & !is.na(Censurdatum),Censurdatum,endDate)))
+test <- within(test, status <- ifelse(Kontaktdatum<=endDate & !is.na(Kontaktdatum),1,0))
+test <- within(test, endAge <- ifelse(status==1,as.integer(Kontaktdatum-Födelsedatum),as.integer(endDate-Födelsedatum)))
+test <- test[,-c(15:16)]
+test <- test[order(test$Personnr,as.numeric(test$Exposuredatum)),]
+
+#Create time dependent cox regression dataset
+lista <- test[!duplicated(test$PatientID),'PatientID']
+t <- list()
+for (i in lista) {
+  t[[i]] = test[test$PatientID == i,]
+}
+ 
+#Remove last row per person
+test <- test[order(test$Personnr,-as.numeric(test$Exposuredatum)),]
+sista <- test[!duplicated(test$PatientID),]
+test <- test[!(test$ID %in% sista$ID),]
+ 
+#Continue dataset creation
+for (i in lista) {
+  test[test$PatientID==i,'endAge'] <- t[[i]][-1,'startAge']
+}
+test$status <- 0
+ 
+#Combine into dataset
+comb <- rbind(test,sista)
+comb <- comb[order(comb$Personnr,as.numeric(comb$Exposuredatum)),]
+comb <- within(comb, Time1 <- as.integer(endAge-startAge))
+comb <- within(comb, startTime <- ifelse(Exposuredatum=="2021-01-01",0,as.integer(Exposuredatum-as.Date("2021-01-01"))))
+comb <- within(comb, endTime <- startTime+endAge-startAge)
+comb <- comb[comb$Time1>0,]
+pat <- comb[!duplicated(comb$Personnr),]
+
+#Remove miscarriages (extra analysis)
+Missfall <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/PREDICT/FörlossningsArtikel/Missfall.csv",header=T,sep=";",encoding="latin1")
+Missfall$Kontaktdatum <- as.Date(Missfall$Kontaktdatum)
+comb <- comb[!(comb$Personnr %in% Missfall$Personnr),]
+pat <- comb[!duplicated(comb$Personnr),]
+
+#Create cox regression analysis and evaluation and visualisation
+names(comb)[names(comb)=="ÅlderStartdatum"] <- "age"
+
+library(survival)
+library(survminer)
+install.packages(“coxphw”)
+library(coxphw)
+cox_model <- coxph(Surv(startTime,endTime,status) ~ exposure, data = comb)
+cox_model <- coxph(Surv(startTime,endTime,status) ~ exposure+age, data = comb)
+cox_model <- coxphw(Surv(startTime,endTime,status) ~ exposure+age, data = comb, template=”AHR”)
+summary(cox_model)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+ 
+#Schoenfeld residuals plot
+schoenfeld_resid <- cox.zph(cox_model)
+schoenfeld_resid
+ggcoxzph(schoenfeld_resid)
+
+#Evalue limit
+install.packages("EValue")
+library(EValue)
+evalues.HR(0.9448813, 0.8889145, 1.004372, rare=T) #1.31 (1.00)
+evalues.HR(1.0294198, 0.9681334, 1.094586, rare=T) #1.20 (1.00)
+evalues.HR(0.9554243, 0.8991076, 1.015269, rare=T) #1.27 (1.00)
+evalues.HR(1.0395365, 0.9779498, 1.1050016, rare=T) #1.24 (1.00)
+
+library(dplyr)
+cox_model <- coxph(Surv(startTime,endTime,status) ~ exposure+ÅlderStartdatum, data = comb)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+
+library(survminer)
+mydata_summary <- comb %>%
+  group_by(Personnr) %>%
+  summarize(status = max(status),    # slutstatus
+            time = max(endTime),      # slut-tid
+		age = max(ÅlderStartdatum),
+		ever_exposed = max(exposure)) # 1 om exponerad någon gång, annars 0
+
+str(mydata_summary)
+
+
+surv_obj <- Surv(time = mydata_summary$time, event = mydata_summary$status)
+
+km_fit <- survfit(surv_obj ~ ever_exposed, data = mydata_summary)
+str(km_fit)
+ggsurvplot(
+  km_fit,
+  risk.table = F,
+  conf.int = TRUE,
+  censor = F,
+  xlim = c(0, 1000),
+  break.time.by = 365,
+  ylim = c(0.5, 1),
+  palette = c("#1f78b4", "#e31a1c"),
+  legend.labs = c("Ej exponerad", "Exponerad"),
+  xlab = "Tid",
+  ylab = "Överlevnadssannolikhet",
+  ggtheme = theme_minimal()
+)
+
+
+# Exempelvärden
+medel_age <- mean(mydata_summary$age, na.rm = TRUE)
+dep_odep <- 0
+dep_dep <- 1
+
+#Justerad
+cox_model <- coxph(Surv(startTime,endTime,status) ~ exposure+ÅlderStartdatum+F32_33, data = comb)
+newdata_0 <- data.frame(exposure = 0, ÅlderStartdatum = medel_age)
+newdata_1 <- data.frame(exposure = 1, ÅlderStartdatum = medel_age)
+head(newdata_0)
+
+#Ojusterad
+cox_model <- coxph(Surv(startTime,endTime,status) ~ exposure, data = combA)
+newdata_0 <- data.frame(exposure = 0)
+newdata_1 <- data.frame(exposure = 1)
+
+fit_0 <- survfit(cox_model, newdata = newdata_0)
+fit_1 <- survfit(cox_model, newdata = newdata_1)
+summary(fit_0)
+
+ggsurvplot(
+  list("Ej exponerad" = fit_0, "Exponerad" = fit_1),
+  combine = TRUE,  
+  risk.table=F,
+  conf.int = TRUE,
+  censor = F,
+  xlim = c(0, 1074),
+  break.time.by = 365,
+  ylim = c(0.85, 1),
+  legend.labs = c("exposure=0", "exposure=1"),
+  palette = c("#1f78b4", "#e31a1c"),
+  xlab = "Days",
+  ylab = "Survival probability",
+  #ggtheme = theme_minimal()
+)
+
+#Dividing data into Three periods Period 1 Vaccination of risk groups and healthcare workers, Period 2 Mass vaccination, and Period 3 Follow-up #vaccination of unvaccinated individuals) 
+vet2 <- survSplit(Surv(startTime,endTime, status) ~ ., data= comb, cut=c(212,365),episode= "tgroup", id="id")
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ age+strata(tgroup), data=vet2)
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ age, data=vet2[vet2$tgroup==1,])
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ age, data=vet2[vet2$tgroup==2,])
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ age, data=vet2[vet2$tgroup==3,])
+summary(cox_model)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+
+
+#Time dependent cox regression analysis with two knots at dates 2021-07-31 and 2021-12-31.
+vet2 <- survSplit(Surv(startTime,endTime, status) ~ ., data= comb, cut=c(212,365),episode= "tgroup", id="id")
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum+strata(tgroup), data=vet2)
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum, data=vet2[vet2$tgroup==1,])
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum, data=vet2[vet2$tgroup==2,])
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum, data=vet2[vet2$tgroup==3,])
+summary(cox_model)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+
+library(splines)
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ tt(exposure),
+tt = function(x, t, ...) x * ns(t, knots=c(212, 365),Boundary.knots = c(0,1074)), data=comb)
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ tt(exposure)+ÅlderStartdatum,
+tt = function(x, t, ...) x * ns(t, knots=c(212, 365),Boundary.knots = c(0,1074)), data=comb)
+summary(cox_model)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+
+#Time dependent cox regression analysis with two knots at dates 2021-07-31 and 2021-12-31.
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ tt(exposure),
+tt = function(x, t, ...) x * ns(t, knots=c(212, 365),Boundary.knots = FALSE), data=comb)
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ tt(exposure)+ÅlderStartdatum,
+tt = function(x, t, ...) x * ns(t, knots=c(212, 365),Boundary.knots = c(0,1074)), data=comb[,c(2,3,7,13,16,17)])
+summary(cox_model)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+
+##Kont HR(t)
+# Sequence of time points for prediction
+t_seq <- seq(0, 1074, length.out = 200)
+# Create spline basis for these time points (same as in model)
+spline_basis <- ns(t_seq, knots = c(212, 365), Boundary.knots = c(0, 1074))
+# Extract coefficients for tt(exposure)
+beta_tt <- coef(cox_model)[grep("tt\\(exposure\\)", names(coef(cox_model)))]
+# Time-varying log hazard ratio
+logHR <- as.vector(spline_basis %*% beta_tt)
+# Convert to hazard ratio
+HR <- exp(logHR)
+plot(t_seq, HR, type = "l", lwd = 2, col = "blue",
+     xlab = "Time (days)", ylab = "Hazard Ratio for exposure",
+     main = "Time-varying effect of exposure")
+abline(h = 1, lty = 2, col = "gray")
+# Baseline (time-invariant) coefficient for exposure
+beta_base <- coef(cox_model)["exposure"]
+# Time-varying log hazard ratio = baseline + spline * coef_tt
+logHR_total <- beta_base + as.vector(spline_basis %*% beta_tt)
+# Hazard ratio
+HR_total <- exp(logHR_total)
+# Plot
+plot(t_seq, HR_total, type = "l", lwd = 2, col = "blue",
+     xlab = "Time (days)", ylab = "Hazard Ratio for exposure",ylim=c(0.6,1.4),
+     main = "Time-varying effect of exposure (total effect)")
+abline(h = 1, lty = 2, col = "gray")
+
+# Extract covariance matrix for exposure and spline coefficients
+cov_mat <- vcov(cox_model)
+# Indices for baseline exposure and spline coefficients
+idx_base <- which(names(coef(cox_model)) == "exposure")
+idx_tt <- grep("tt\\(exposure\\)", names(coef(cox_model)))
+# Subset covariance matrix for baseline + spline terms
+cov_sub <- cov_mat[c(idx_base, idx_tt), c(idx_base, idx_tt)]
+# Combine spline basis with 1 for baseline coefficient
+X_mat <- cbind(1, spline_basis)  # 1 for baseline effect, spline basis for tt()
+# Calculate standard errors of total log HR
+se_logHR_total <- sqrt(rowSums((X_mat %*% cov_sub) * X_mat))
+# Calculate upper and lower 95% confidence bands
+HR_total <- exp(logHR_total)
+HR_upper <- exp(logHR_total + 1.96 * se_logHR_total)
+HR_lower <- exp(logHR_total - 1.96 * se_logHR_total)
+# Plot the hazard ratio with confidence bands
+plot(t_seq, HR_total, type = "l", lwd = 2, col = "blue",
+     xlab = "Time (days)", ylab = "Hazard Ratio for exposure",ylim=c(0.6,1.4),
+     main = "Time-varying effect of exposure with 95% CI")
+# Add confidence bands
+lines(t_seq, HR_upper, lty = 2, col = "gray40")
+lines(t_seq, HR_lower, lty = 2, col = "gray40")
+# Reference line at HR = 1
+abline(h = 1, lty = 3, col = "darkgray")
+
+
+
+
+ 
+####Part II: Miscarriages####
+
+Slutdatum <- as.Date("2023-09-30")
+
+#Study cohort
+data <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/Kausal_inferens/data.csv",header=T,sep=",",encoding="latin1")
+data$Födelsedatum <- as.Date(data$Födelsedatum)
+döda <- read.csv("H:/Dokument/Futurum/DataUttag/Stomby/Analyser/Döda_jkp.csv",header=T,sep=";",encoding="latin1")
+data <- data[data$ÅlderStartdatum>=18 & data$ÅlderStartdatum<46,]
+data <- data[data$Kön=="Kvinna",]
+
+##Outcome Miscarriage
+FörstaMissfall21_ <- read.csv("C:/Users/Viviana/Documents/Dennis/PREDICT/FörstaMissfall21_.csv",header=T,sep=";",encoding="latin1")
+names(FörstaMissfall21_)[names(FörstaMissfall21_)=="Inskrivningsdatum"] <- "Kontaktdatum"
+FörstaMissfall21_$Kontaktdatum <- as.Date(FörstaMissfall21_$Kontaktdatum)
+str(FörstaMissfall21_)
+#Remove miscarriages within 22 weeks after study start
+n <- -154
+FörstaMissfall21_ <- within(FörstaMissfall21_, Kontaktdatum <- as.Date(Kontaktdatum+n))
+
+###COVID-19 vaccination dose 2
+FörstaVaccinationDos2 <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/PREDICT/FörstaVaccinationDos2.csv",header=T,sep=";",encoding="latin1")
+FörstaVaccinationDos2$Kontaktdatum <- as.Date(FörstaVaccinationDos2$Kontaktdatum)
+names(FörstaVaccinationDos2)[names(FörstaVaccinationDos2)=="Kontaktdatum"] <- "Exposuredatum"
+
+#Who are exposed/vaccinated?
+data1 <- merge(data,FörstaVaccinationDos2,by="Personnr",all.x=T)
+data1 <- within(data1, exposure <- ifelse(!is.na(data1$Exposuredatum),1,0))
+dat <- within(data1, Exposuredatum <- as.Date("2021-01-01"))
+dat <- within(dat, exposure <- 0)
+data <- rbind(dat,data1[!is.na(data1$Exposuredatum),])
+
+#Remove exposed before "2021-01-01"
+data <- data[data$Exposuredatum>=as.Date("2021-01-01"),]
+test <- merge(data, döda,by="Personnr",all.x=T)
+test$Avliden.datum <- as.Date(test$Avliden.datum)
+test <- merge(test, Missfall[,-c(2)],by="Personnr",all.x=T)
+test$Exposuredatum <- as.Date(test$Exposuredatum)
+test$Födelsedatum <- as.Date(test$Födelsedatum)
+test <- test[order(test$Personnr,as.numeric(test$Exposuredatum)),]
+test$ID <- seq.int(nrow(test))
+
+#Calculate age at exposure
+test <- within(test, startAge <- as.integer(Exposuredatum-Födelsedatum))
+test <- within(test, endDate <- as.Date(ifelse(Avliden.datum<Slutdatum & !is.na(Avliden.datum),Avliden.datum,Slutdatum)))
+test <- within(test, status <- ifelse(Kontaktdatum<=endDate & !is.na(Kontaktdatum),1,0))
+test <- within(test, endAge <- ifelse(status==1,as.integer(Kontaktdatum-Födelsedatum),as.integer(endDate-Födelsedatum)))
+
+#Remove outcome before exposure
+test <- within(test, Före <- ifelse(Kontaktdatum<Exposuredatum & !is.na(Kontaktdatum) & !is.na(Exposuredatum),1,0))
+test <- test[test$Före==0,]
+test <- test[,-c(15)]
+test <- test[!is.na(test$PatientID),]
+test <- test[order(test$Personnr,as.numeric(test$Exposuredatum)),]
+
+#Censor for dose 3
+FörstaVaccinationDos3 <- read.csv("H:/Dokument/LinU/Dennis forskningsplan/PREDICT/FörstaVaccinationDos3.csv",header=T,sep=";",encoding="latin1")
+FörstaVaccinationDos3$Kontaktdatum <- as.Date(FörstaVaccinationDos3$Kontaktdatum)
+names(FörstaVaccinationDos3)[names(FörstaVaccinationDos3)=="Kontaktdatum"] <- "Censurdatum"
+test <- merge(test,FörstaVaccinationDos3,by="Personnr",all.x=T)
+
+#Remove any dose 3 registered with date before dose 2
+test <- within(test, Före <- ifelse(Censurdatum<=Exposuredatum & !is.na(Censurdatum),1,0))
+test <- test[test$Före==0,]
+test <- within(test, endDate <- as.Date(ifelse(Censurdatum<endDate & !is.na(Censurdatum),Censurdatum,endDate)))
+test <- within(test, status <- ifelse(Kontaktdatum<=endDate & !is.na(Kontaktdatum),1,0))
+test <- within(test, endAge <- ifelse(status==1,as.integer(Kontaktdatum-Födelsedatum),as.integer(endDate-Födelsedatum)))
+test <- test[,-c(15:16)]
+test <- test[order(test$Personnr,as.numeric(test$Exposuredatum)),]
+
+#Create time dependent cox regression dataset
+lista <- test[!duplicated(test$PatientID),'PatientID']
+t <- list()
+for (i in lista) {
+  t[[i]] = test[test$PatientID == i,]
+}
+
+#Remove last row per person
+test <- test[order(test$Personnr,-as.numeric(test$Exposuredatum)),]
+sista <- test[!duplicated(test$PatientID),]
+test <- test[!(test$ID %in% sista$ID),]
+
+for (i in lista) {
+  test[test$PatientID==i,'endAge'] <- t[[i]][-1,'startAge']
+}
+test$status <- 0
+
+#Combine into dataset
+comb <- rbind(test,sista)
+comb <- comb[order(comb$Personnr,as.numeric(comb$Exposuredatum)),]
+comb <- within(comb, Time1 <- as.integer(endAge-startAge))
+comb <- within(comb, startTime <- ifelse(Exposuredatum=="2021-01-01",0,as.integer(Exposuredatum-as.Date("2021-01-01"))))
+comb <- within(comb, endTime <- startTime+endAge-startAge)
+comb <- comb[comb$Time1>0,]
+pat <- comb[!duplicated(comb$Personnr),]
+
+#Create cox regression analysis and evaluation and visualisation
+names(comb)[names(comb)=="ÅlderStartdatum"] <- "age"
+
+
+library(survival)
+library(survminer)
+cox_model <- coxph(Surv(startTime,endTime,status) ~ exposure, data = comb)
+cox_model <- coxph(Surv(startTime,endTime,status) ~ exposure+age, data = comb)
+summary(cox_model)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+
+#Schoenfeld residuals plot
+schoenfeld_resid <- cox.zph(cox_model)
+schoenfeld_resid
+ggcoxzph(schoenfeld_resid)
+
+#Time dependent cox regression analysis with two knots at dates 2021-07-31 and 2021-12-31.
+#Dividing data into Three periods Period 1 Vaccination of risk groups and healthcare workers, Period 2 Mass vaccination, and Period 3 Follow-up #vaccination of unvaccinated individuals) 
+vet2 <- survSplit(Surv(startTime,endTime, status) ~ ., data= comb, cut=c(212,365),episode= "tgroup", id="id")
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum+strata(tgroup), data=vet2)
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum, data=vet2[vet2$tgroup==1,])
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum, data=vet2[vet2$tgroup==2,])
+cox_model <- coxph(Surv(startTime, endTime, status) ~ exposure+ ÅlderStartdatum, data=vet2[vet2$tgroup==3,])
+summary(cox_model)
+exp(cbind(HR = coef(cox_model), confint.default(cox_model, level = 0.95)))
+
+
+
+
